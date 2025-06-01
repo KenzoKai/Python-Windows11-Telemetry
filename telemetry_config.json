@@ -1,0 +1,49 @@
+{
+  "arduino": {
+    "ip_address": "192.168.1.100",
+    "port": 8080,
+    "connection_timeout": 5.0
+  },
+  "client": {
+    "update_interval": 2.0,
+    "retry_interval": 5.0,
+    "max_retries": -1
+  },
+  "wifi": {
+    "ssid": "YOUR_WIFI_SSID",
+    "password": "YOUR_WIFI_PASSWORD"
+  },
+  "display": {
+    "screen_width": 800,
+    "screen_height": 480,
+    "header_height": 60,
+    "panel_width": 190,
+    "panel_height": 140,
+    "margin": 10
+  },
+  "monitoring": {
+    "enable_gpu": true,
+    "enable_temperature": true,
+    "enable_audio": false,
+    "enable_detailed_disk": true,
+    "enable_per_core_cpu": false
+  },
+  "thresholds": {
+    "cpu_warning": 60,
+    "cpu_critical": 80,
+    "memory_warning": 70,
+    "memory_critical": 85,
+    "temp_warning": 65,
+    "temp_critical": 80,
+    "gpu_warning": 60,
+    "gpu_critical": 80
+  },
+  "colors": {
+    "good": "0x07E0",
+    "warning": "0xFFE0", 
+    "critical": "0xF800",
+    "background": "0x0000",
+    "text": "0xFFFF",
+    "panel": "0x4208"
+  }
+}

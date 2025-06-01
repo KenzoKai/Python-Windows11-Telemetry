@@ -1,0 +1,33 @@
+# Arduino Telemetry Client Requirements
+# Install with: pip install -r arduino_client_requirements.txt
+
+# Core system monitoring
+psutil>=5.8.0
+
+# JSON handling (usually built-in, but specified for completeness)
+# json - built-in module
+
+# Optional dependencies for enhanced monitoring
+# Uncomment and install based on your system:
+
+# Windows Management Instrumentation (Windows only)
+# wmi>=1.5.1
+
+# GPU monitoring (cross-platform)
+# GPUtil>=1.4.0
+
+# NVIDIA GPU monitoring (NVIDIA GPUs only)
+# nvidia-ml-py3>=7.352.0
+
+# Audio monitoring (Windows only)
+# pycaw>=20220416
+
+# Network utilities
+# netifaces>=0.11.0
+
+# System information
+# platform - built-in module
+# datetime - built-in module
+# time - built-in module
+# socket - built-in module
+# threading - built-in module
