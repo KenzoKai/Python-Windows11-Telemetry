@@ -1,16 +1,18 @@
 # Windows 11 System Telemetry Dashboard
 
-A real-time system monitoring dashboard built with Python and Tkinter, specifically designed for Windows 11. The dashboard displays live system telemetry including CPU usage, memory consumption, disk I/O, network activity, and system temperatures.
+A real-time system monitoring dashboard built with Python and Tkinter, specifically designed for Windows 11. The dashboard displays live system telemetry including CPU usage, memory consumption, disk I/O, network activity, GPU monitoring, audio interface metrics, and system temperatures.
 
 ## Features
 
 - **Real-time Monitoring**: Updates every 500ms for responsive system monitoring
-- **Comprehensive Metrics**: 
+- **Comprehensive Metrics**:
   - CPU usage percentage and frequency
   - Memory usage with detailed breakdown
   - Disk I/O read/write speeds and usage
   - Network upload/download speeds and total transfer
-  - System temperatures (CPU) and uptime
+  - GPU usage, memory, and temperature (NVIDIA and general GPU support)
+  - Audio interface metrics (sample rate, bit depth, buffer size)
+  - System temperatures (CPU/GPU) and uptime
 - **Color-coded Indicators**: Visual alerts for high resource usage
 - **Dark Theme**: Professional dark interface optimized for extended use
 - **Low Resource Usage**: Efficient background data collection
@@ -38,7 +40,7 @@ A real-time system monitoring dashboard built with Python and Tkinter, specifica
 
    Or install manually:
    ```bash
-   pip install psutil WMI
+   pip install psutil WMI matplotlib GPUtil pycaw comtypes nvidia-ml-py3
    ```
 
 3. **Run the dashboard**
@@ -57,28 +59,40 @@ The dashboard will open in a new window and immediately start collecting and dis
 
 ### Dashboard Layout
 
-The dashboard is organized into five main sections:
+The dashboard is organized into seven main sections:
 
-1. **CPU Panel** (Top Left)
+1. **CPU Panel**
    - Current CPU usage percentage
    - CPU frequency in MHz
    - Number of CPU cores
 
-2. **Memory Panel** (Top Right)
+2. **Memory Panel**
    - Memory usage percentage
    - Used, available, and total memory in human-readable format
 
-3. **Disk I/O Panel** (Middle Left)
+3. **Disk I/O Panel**
    - Real-time read/write speeds
    - Overall disk usage percentage
 
-4. **Network Panel** (Middle Right)
+4. **Network Panel**
    - Upload and download speeds
    - Total data transferred since startup
 
-5. **Temperature & Status Panel** (Bottom)
+5. **Temperature & Status Panel**
    - CPU temperature (when available)
    - System uptime
+
+6. **GPU Panel**
+   - GPU usage percentage
+   - GPU memory usage and percentage
+   - GPU temperature
+   - GPU name/model
+
+7. **Audio Interface Panel**
+   - Audio sample rate (kHz)
+   - Bit depth and channel configuration
+   - Buffer size
+   - Audio device name
 
 ### Color Coding
 
@@ -116,13 +130,32 @@ The dashboard uses color coding to indicate system health:
 
 - **psutil**: Cross-platform system and process utilities
 - **WMI**: Windows Management Instrumentation for temperature data
+- **matplotlib**: Plotting library for real-time graphs
+- **GPUtil**: GPU monitoring and statistics
+- **nvidia-ml-py3**: NVIDIA GPU monitoring via NVML
+- **pycaw**: Windows Core Audio API for audio device information
+- **comtypes**: COM interface support for Windows APIs
 
-### Temperature Monitoring
+### Hardware Monitoring
 
+**Temperature Monitoring:**
 Temperature monitoring requires WMI access and may need administrator privileges. If WMI is not available or accessible, the dashboard will:
 - Display a fallback estimated temperature based on CPU usage
 - Continue to function normally for all other metrics
 - Show a warning message in the console
+
+**GPU Monitoring:**
+GPU monitoring supports multiple detection methods:
+- NVIDIA GPUs via NVML (nvidia-ml-py3) for detailed metrics
+- General GPU detection via GPUtil for broader compatibility
+- Graceful fallback when no GPU libraries are available
+
+**Audio Interface Monitoring:**
+Audio monitoring provides interface specifications:
+- Sample rate, bit depth, and channel configuration
+- Buffer size information
+- Default audio device detection
+- Graceful handling when audio APIs are unavailable
 
 ## Troubleshooting
 

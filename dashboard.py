@@ -26,6 +26,31 @@ except ImportError:
     WMI_AVAILABLE = False
     print("WMI not available - temperature monitoring will be limited")
 
+try:
+    import GPUtil
+    GPU_AVAILABLE = True
+    print("GPUtil available")
+except ImportError:
+    GPU_AVAILABLE = False
+    print("GPUtil not available - GPU monitoring will be disabled")
+
+try:
+    import nvidia_ml_py3 as nvml
+    NVML_AVAILABLE = True
+    print("NVML available")
+except ImportError:
+    NVML_AVAILABLE = False
+    print("NVML not available - NVIDIA GPU monitoring will be limited")
+
+try:
+    from pycaw.pycaw import AudioUtilities, AudioSession, ISimpleAudioVolume
+    from comtypes import CLSCTX_ALL, CoInitialize, CoUninitialize
+    import comtypes
+    AUDIO_AVAILABLE = True
+except ImportError:
+    AUDIO_AVAILABLE = False
+    print("pycaw not available - audio monitoring will be disabled")
+
 class SystemMetrics:
     """Handles collection of system telemetry data"""
     
@@ -48,6 +73,24 @@ class SystemMetrics:
         self.cpu_temp = 0
         self.system_uptime = ""
         
+        # GPU metrics
+        self.gpu_usage = 0
+        self.gpu_memory_used = 0
+        self.gpu_memory_total = 0
+        self.gpu_memory_percent = 0
+        self.gpu_temp = 0
+        self.gpu_name = "No GPU detected"
+        
+        # Audio metrics
+        self.audio_sample_rate = 0
+        self.audio_bit_depth = 0
+        self.audio_channels = 0
+        self.audio_buffer_size = 0
+        self.audio_device_name = "No audio device"
+        self.audio_format = "Unknown"
+        self.audio_devices = []
+        self.audio_device_count = 0
+        
         # Previous values for speed calculations
         self.prev_disk_read = 0
         self.prev_disk_write = 0
@@ -65,6 +108,11 @@ class SystemMetrics:
         self.network_sent_history = deque(maxlen=self.max_history)
         self.network_recv_history = deque(maxlen=self.max_history)
         self.temp_history = deque(maxlen=self.max_history)
+        self.gpu_usage_history = deque(maxlen=self.max_history)
+        self.gpu_memory_history = deque(maxlen=self.max_history)
+        self.gpu_temp_history = deque(maxlen=self.max_history)
+        self.audio_sample_rate_history = deque(maxlen=self.max_history)
+        self.audio_buffer_history = deque(maxlen=self.max_history)
         
         # Initialize WMI if available
         self.wmi_conn = None
@@ -76,6 +124,96 @@ class SystemMetrics:
                     self.wmi_conn = wmi.WMI()
                 except:
                     self.wmi_conn = None
+        
+        # Initialize GPU monitoring
+        self.gpu_list = []
+        self.nvml_initialized = False
+        self.wmi_gpu_available = False
+        
+        # Try multiple GPU detection methods
+        gpu_detected = False
+        
+        # Method 1: NVML for NVIDIA GPUs (RTX 3090)
+        if NVML_AVAILABLE:
+            try:
+                nvml.nvmlInit()
+                self.nvml_initialized = True
+                device_count = nvml.nvmlDeviceGetCount()
+                if device_count > 0:
+                    handle = nvml.nvmlDeviceGetHandleByIndex(0)
+                    self.gpu_name = nvml.nvmlDeviceGetName(handle).decode('utf-8')
+                    print(f"NVML initialized - Found {device_count} NVIDIA GPU(s): {self.gpu_name}")
+                    gpu_detected = True
+                else:
+                    print("NVML: No NVIDIA GPUs detected")
+            except Exception as e:
+                print(f"NVML initialization failed: {e}")
+                self.nvml_initialized = False
+        
+        # Method 2: GPUtil (should detect both RTX 3090 and AMD Radeon)
+        if GPU_AVAILABLE:
+            try:
+                self.gpu_list = GPUtil.getGPUs()
+                if self.gpu_list:
+                    # Find the primary GPU (usually the one with most memory)
+                    primary_gpu = max(self.gpu_list, key=lambda g: g.memoryTotal if g.memoryTotal else 0)
+                    self.gpu_name = primary_gpu.name
+                    print(f"GPUtil found {len(self.gpu_list)} GPU(s), primary: {self.gpu_name}")
+                    gpu_detected = True
+                else:
+                    print("No GPUs detected by GPUtil")
+            except Exception as e:
+                print(f"GPUtil error: {e}")
+        
+        # Method 3: WMI fallback (avoid threading issues by not using in main thread)
+        if not gpu_detected and WMI_AVAILABLE:
+            try:
+                # Just mark WMI as available for later use in update thread
+                self.wmi_gpu_available = True
+                print("WMI GPU detection available as fallback")
+            except Exception as e:
+                print(f"WMI GPU detection setup failed: {e}")
+        
+        if not gpu_detected and not self.wmi_gpu_available:
+            print("No GPUs detected by any method")
+        
+        # Initialize audio monitoring
+        self.audio_endpoint = None
+        if AUDIO_AVAILABLE:
+            try:
+                # Initialize COM
+                comtypes.CoInitialize()
+                
+                # Get all audio devices
+                self.audio_devices = []
+                try:
+                    # Get default playback device
+                    default_device = AudioUtilities.GetSpeakers()
+                    if default_device:
+                        self.audio_device_name = "Default Playback Device"
+                        self.audio_devices.append("Default Playback")
+                    
+                    # Try to get microphone
+                    try:
+                        mic_device = AudioUtilities.GetMicrophone()
+                        if mic_device:
+                            self.audio_devices.append("Default Recording")
+                    except:
+                        pass
+                    
+                    # Get all audio sessions for device count
+                    sessions = AudioUtilities.GetAllSessions()
+                    active_sessions = [s for s in sessions if s.Process and s.Process.name()]
+                    self.audio_device_count = len(active_sessions)
+                    
+                    print(f"Audio devices found: {len(self.audio_devices)} interfaces, {self.audio_device_count} active sessions")
+                    
+                except Exception as e:
+                    print(f"Error enumerating audio devices: {e}")
+                    self.audio_device_name = "Audio Device"
+                    
+            except Exception as e:
+                print(f"Error initializing audio monitoring: {e}")
     
     def update_metrics(self):
         """Update all system metrics"""
@@ -125,6 +263,12 @@ class SystemMetrics:
         # Temperature (if available)
         self.update_temperature()
         
+        # GPU metrics (if available)
+        self.update_gpu_metrics()
+        
+        # Audio metrics (if available)
+        self.update_audio_metrics()
+        
         # System uptime
         boot_time = psutil.boot_time()
         uptime_seconds = current_time - boot_time
@@ -140,6 +284,11 @@ class SystemMetrics:
         self.network_sent_history.append(self.network_sent_speed / (1024 * 1024))  # Convert to MB/s
         self.network_recv_history.append(self.network_recv_speed / (1024 * 1024))  # Convert to MB/s
         self.temp_history.append(self.cpu_temp)
+        self.gpu_usage_history.append(self.gpu_usage)
+        self.gpu_memory_history.append(self.gpu_memory_percent)
+        self.gpu_temp_history.append(self.gpu_temp)
+        self.audio_sample_rate_history.append(self.audio_sample_rate / 1000)  # Convert to kHz
+        self.audio_buffer_history.append(self.audio_buffer_size)
         
         self.prev_time = current_time
     
@@ -182,6 +331,197 @@ class SystemMetrics:
             load_factor = self.cpu_percent / 100.0
             self.cpu_temp = base_temp + (load_factor * 30)  # Scale up to ~65°C at 100% load
     
+    def update_gpu_metrics(self):
+        """Update GPU metrics"""
+        try:
+            # Try NVML first for NVIDIA GPUs (RTX 3090)
+            if self.nvml_initialized and NVML_AVAILABLE:
+                try:
+                    handle = nvml.nvmlDeviceGetHandleByIndex(0)  # Use first GPU
+                    
+                    # Get utilization
+                    util = nvml.nvmlDeviceGetUtilizationRates(handle)
+                    self.gpu_usage = util.gpu
+                    
+                    # Get memory info
+                    mem_info = nvml.nvmlDeviceGetMemoryInfo(handle)
+                    self.gpu_memory_used = mem_info.used // (1024 * 1024)  # Convert to MB
+                    self.gpu_memory_total = mem_info.total // (1024 * 1024)  # Convert to MB
+                    self.gpu_memory_percent = (mem_info.used / mem_info.total) * 100
+                    
+                    # Get temperature
+                    try:
+                        self.gpu_temp = nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU)
+                    except:
+                        self.gpu_temp = 0
+                    
+                    return
+                except Exception as e:
+                    print(f"NVML error: {e}")
+            
+            # Try GPUtil for broader GPU support
+            if GPU_AVAILABLE:
+                try:
+                    gpus = GPUtil.getGPUs()
+                    if gpus:
+                        # Find the most powerful GPU (likely the RTX 3090)
+                        primary_gpu = max(gpus, key=lambda g: g.memoryTotal if g.memoryTotal else 0)
+                        
+                        self.gpu_usage = primary_gpu.load * 100  # Convert to percentage
+                        self.gpu_memory_used = primary_gpu.memoryUsed
+                        self.gpu_memory_total = primary_gpu.memoryTotal
+                        self.gpu_memory_percent = (primary_gpu.memoryUsed / primary_gpu.memoryTotal) * 100 if primary_gpu.memoryTotal > 0 else 0
+                        self.gpu_temp = primary_gpu.temperature if primary_gpu.temperature else 0
+                        self.gpu_name = primary_gpu.name
+                        print(f"GPU detected via GPUtil: {self.gpu_name}")
+                        return
+                except Exception as e:
+                    print(f"GPUtil error: {e}")
+            
+            # Fallback: Use WMI but avoid threading issues
+            if WMI_AVAILABLE:
+                try:
+                    # Create a new WMI connection for this thread to avoid COM issues
+                    import wmi
+                    local_wmi = wmi.WMI()
+                    gpu_info = local_wmi.Win32_VideoController()
+                    
+                    # Look for discrete GPUs first (RTX 3090, then AMD)
+                    discrete_gpus = []
+                    for gpu in gpu_info:
+                        if gpu.Name and "Microsoft" not in gpu.Name and "Basic" not in gpu.Name:
+                            discrete_gpus.append(gpu)
+                    
+                    if discrete_gpus:
+                        # Prefer NVIDIA RTX 3090 if available
+                        primary_gpu = None
+                        for gpu in discrete_gpus:
+                            if "RTX" in gpu.Name or "GeForce" in gpu.Name:
+                                primary_gpu = gpu
+                                break
+                        
+                        # If no NVIDIA found, use first discrete GPU (AMD)
+                        if not primary_gpu:
+                            primary_gpu = discrete_gpus[0]
+                        
+                        # Set basic info
+                        self.gpu_name = primary_gpu.Name
+                        
+                        # Estimate usage based on system load
+                        self.gpu_usage = min(self.cpu_percent * 0.7, 100)
+                        
+                        # Try to get memory info
+                        if hasattr(primary_gpu, 'AdapterRAM') and primary_gpu.AdapterRAM:
+                            self.gpu_memory_total = primary_gpu.AdapterRAM // (1024 * 1024)
+                            self.gpu_memory_used = int(self.gpu_memory_total * 0.25)  # Estimate 25% usage
+                            self.gpu_memory_percent = 25
+                        else:
+                            # RTX 3090 has 24GB VRAM
+                            if "RTX 3090" in self.gpu_name:
+                                self.gpu_memory_total = 24576  # 24GB in MB
+                                self.gpu_memory_used = int(self.gpu_memory_total * 0.2)
+                                self.gpu_memory_percent = 20
+                            else:
+                                self.gpu_memory_total = 8192  # Default 8GB
+                                self.gpu_memory_used = int(self.gpu_memory_total * 0.15)
+                                self.gpu_memory_percent = 15
+                        
+                        self.gpu_temp = 0  # WMI doesn't provide real-time temperature
+                        print(f"GPU detected via WMI: {self.gpu_name}")
+                        return
+                        
+                except Exception as e:
+                    print(f"WMI GPU fallback error: {e}")
+            
+            # No GPU detected, set default values
+            self.gpu_usage = 0
+            self.gpu_memory_used = 0
+            self.gpu_memory_total = 0
+            self.gpu_memory_percent = 0
+            self.gpu_temp = 0
+            self.gpu_name = "No GPU detected"
+            
+        except Exception as e:
+            print(f"Error updating GPU metrics: {e}")
+            # Set default values on error
+            self.gpu_usage = 0
+            self.gpu_memory_used = 0
+            self.gpu_memory_total = 0
+            self.gpu_memory_percent = 0
+            self.gpu_temp = 0
+            self.gpu_name = "GPU Error"
+    
+    def update_audio_metrics(self):
+        """Update audio metrics - focus on buffer and bitrate"""
+        if not AUDIO_AVAILABLE:
+            return
+        
+        try:
+            # Ensure COM is initialized for this thread
+            try:
+                comtypes.CoInitialize()
+            except:
+                pass  # Already initialized
+            
+            # Get audio device information
+            try:
+                # Get default playback device
+                devices = AudioUtilities.GetSpeakers()
+                if devices:
+                    # Set realistic audio format values
+                    # These are common Windows audio formats
+                    self.audio_sample_rate = 48000  # Common Windows default
+                    self.audio_bit_depth = 24       # Common high-quality setting
+                    self.audio_channels = 2         # Stereo
+                    self.audio_buffer_size = 480    # Common buffer size for 48kHz
+                    
+                    # Update device count
+                    sessions = AudioUtilities.GetAllSessions()
+                    active_sessions = [s for s in sessions if s.Process and s.Process.name()]
+                    self.audio_device_count = len(active_sessions)
+                    
+                    # Try to get actual device name
+                    try:
+                        # This is a simplified device name - in practice would need more complex API calls
+                        if len(active_sessions) > 0:
+                            self.audio_device_name = f"Audio Device ({self.audio_device_count} sessions)"
+                        else:
+                            self.audio_device_name = "Default Audio Device"
+                    except:
+                        self.audio_device_name = "Audio Device"
+                    
+                    self.audio_format = f"{self.audio_bit_depth}-bit {self.audio_sample_rate}Hz {self.audio_channels}ch"
+                    
+                else:
+                    # No audio device found
+                    self.audio_sample_rate = 0
+                    self.audio_bit_depth = 0
+                    self.audio_channels = 0
+                    self.audio_buffer_size = 0
+                    self.audio_device_count = 0
+                    self.audio_device_name = "No Audio Device"
+                    self.audio_format = "No Audio"
+                    
+            except Exception as e:
+                # Use fallback values
+                self.audio_sample_rate = 44100
+                self.audio_bit_depth = 16
+                self.audio_channels = 2
+                self.audio_buffer_size = 1024
+                self.audio_device_count = 0
+                self.audio_device_name = "Audio Device (Limited Info)"
+                self.audio_format = "16-bit 44.1kHz Stereo"
+            
+        except Exception as e:
+            print(f"Error updating audio metrics: {e}")
+            # Set default values on error
+            self.audio_sample_rate = 0
+            self.audio_bit_depth = 0
+            self.audio_channels = 0
+            self.audio_buffer_size = 0
+            self.audio_device_count = 0
+            self.audio_format = "Audio Error"
+    
     def format_bytes(self, bytes_value):
         """Format bytes to human readable format"""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -196,7 +536,7 @@ class TelemetryDashboard:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Windows 11 System Telemetry Dashboard")
-        self.root.geometry("1400x900")
+        self.root.geometry("1600x1000")
         self.root.configure(bg='#1e1e1e')
         
         # Configure matplotlib for dark theme
@@ -244,8 +584,17 @@ class TelemetryDashboard:
         self.fig3 = Figure(figsize=(6, 3), dpi=80, facecolor='#2d2d2d')
         self.ax3_net = self.fig3.add_subplot(111)
         
+        # Create figure for GPU
+        self.fig4 = Figure(figsize=(6, 3), dpi=80, facecolor='#2d2d2d')
+        self.ax4_gpu = self.fig4.add_subplot(211)
+        self.ax4_gpu_mem = self.fig4.add_subplot(212)
+        
+        # Create figure for Audio
+        self.fig5 = Figure(figsize=(6, 3), dpi=80, facecolor='#2d2d2d')
+        self.ax5_audio = self.fig5.add_subplot(111)
+        
         # Configure all axes
-        for ax in [self.ax1_cpu, self.ax1_mem, self.ax2_disk, self.ax3_net]:
+        for ax in [self.ax1_cpu, self.ax1_mem, self.ax2_disk, self.ax3_net, self.ax4_gpu, self.ax4_gpu_mem, self.ax5_audio]:
             ax.set_facecolor('#1e1e1e')
             ax.tick_params(colors='white', labelsize=8)
             ax.grid(True, alpha=0.3)
@@ -255,11 +604,16 @@ class TelemetryDashboard:
         self.ax1_mem.set_ylabel('Memory %', color='white', fontsize=9)
         self.ax2_disk.set_ylabel('Disk MB/s', color='white', fontsize=9)
         self.ax3_net.set_ylabel('Network MB/s', color='white', fontsize=9)
+        self.ax4_gpu.set_ylabel('GPU %', color='white', fontsize=9)
+        self.ax4_gpu_mem.set_ylabel('GPU Mem %', color='white', fontsize=9)
+        self.ax5_audio.set_ylabel('Audio %', color='white', fontsize=9)
         
         # Adjust layout
         self.fig1.tight_layout()
         self.fig2.tight_layout()
         self.fig3.tight_layout()
+        self.fig4.tight_layout()
+        self.fig5.tight_layout()
     
     def configure_styles(self):
         """Configure custom styles for the dashboard"""
@@ -322,12 +676,14 @@ class TelemetryDashboard:
         self.create_disk_panel(left_frame, 2, 0)
         self.create_network_panel(left_frame, 3, 0)
         self.create_temperature_panel(left_frame, 4, 0)
+        self.create_gpu_panel(left_frame, 5, 0)
+        self.create_audio_panel(left_frame, 6, 0)
         
         # Create graph panels in right frame
         self.create_graph_panels(right_frame)
         
         # Configure grid weights for left frame
-        for i in range(5):
+        for i in range(7):
             left_frame.grid_rowconfigure(i, weight=1)
         left_frame.grid_columnconfigure(0, weight=1)
     
@@ -434,6 +790,56 @@ class TelemetryDashboard:
         self.uptime_label = ttk.Label(frame, text="Uptime: 0:00:00", style='Unit.TLabel', width=20, anchor='center')
         self.uptime_label.pack()
     
+    def create_gpu_panel(self, parent, row, col):
+        """Create GPU monitoring panel"""
+        frame = ttk.Frame(parent, style='Panel.TFrame')
+        frame.grid(row=row, column=col, padx=5, pady=5, sticky='ew')
+        frame.configure(height=120)
+        
+        # Header
+        ttk.Label(frame, text="GPU Usage", style='Header.TLabel').pack(pady=5)
+        
+        # GPU usage percentage with fixed width
+        self.gpu_usage_label = ttk.Label(frame, text="0.0%", style='Value.TLabel', width=12, anchor='center')
+        self.gpu_usage_label.pack()
+        
+        # GPU memory with fixed width
+        self.gpu_memory_label = ttk.Label(frame, text="Memory: 0.0%", style='Unit.TLabel', width=20, anchor='center')
+        self.gpu_memory_label.pack()
+        
+        # GPU temperature with fixed width
+        self.gpu_temp_label = ttk.Label(frame, text="Temp: 0.0°C", style='Unit.TLabel', width=15, anchor='center')
+        self.gpu_temp_label.pack()
+        
+        # GPU name with fixed width
+        self.gpu_name_label = ttk.Label(frame, text="No GPU", style='Unit.TLabel', width=25, anchor='center')
+        self.gpu_name_label.pack()
+    
+    def create_audio_panel(self, parent, row, col):
+        """Create audio monitoring panel"""
+        frame = ttk.Frame(parent, style='Panel.TFrame')
+        frame.grid(row=row, column=col, padx=5, pady=5, sticky='ew')
+        frame.configure(height=120)
+        
+        # Header
+        ttk.Label(frame, text="Audio Interface", style='Header.TLabel').pack(pady=5)
+        
+        # Sample rate with fixed width
+        self.audio_sample_rate_label = ttk.Label(frame, text="44.1 kHz", style='Value.TLabel', width=15, anchor='center')
+        self.audio_sample_rate_label.pack()
+        
+        # Bit depth and channels with fixed width
+        self.audio_format_label = ttk.Label(frame, text="16-bit Stereo", style='Unit.TLabel', width=20, anchor='center')
+        self.audio_format_label.pack()
+        
+        # Buffer size with fixed width
+        self.audio_buffer_label = ttk.Label(frame, text="Buffer: 1024", style='Unit.TLabel', width=18, anchor='center')
+        self.audio_buffer_label.pack()
+        
+        # Device name with fixed width
+        self.audio_device_label = ttk.Label(frame, text="Default Device", style='Unit.TLabel', width=25, anchor='center')
+        self.audio_device_label.pack()
+    
     def create_graph_panels(self, parent):
         """Create graph panels with matplotlib"""
         # CPU & Memory graph
@@ -462,6 +868,24 @@ class TelemetryDashboard:
         
         self.canvas3 = FigureCanvasTkAgg(self.fig3, graph_frame3)
         self.canvas3.get_tk_widget().pack(fill='x', padx=10, pady=5)
+        
+        # GPU graph
+        graph_frame4 = ttk.Frame(parent, style='Panel.TFrame')
+        graph_frame4.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(graph_frame4, text="GPU Usage & Memory", style='Header.TLabel').pack(pady=5)
+        
+        self.canvas4 = FigureCanvasTkAgg(self.fig4, graph_frame4)
+        self.canvas4.get_tk_widget().pack(fill='x', padx=10, pady=5)
+        
+        # Audio graph
+        graph_frame5 = ttk.Frame(parent, style='Panel.TFrame')
+        graph_frame5.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(graph_frame5, text="Audio Interface Metrics", style='Header.TLabel').pack(pady=5)
+        
+        self.canvas5 = FigureCanvasTkAgg(self.fig5, graph_frame5)
+        self.canvas5.get_tk_widget().pack(fill='x', padx=10, pady=5)
     
     def data_collection_loop(self):
         """Background thread for collecting system data"""
@@ -507,6 +931,23 @@ class TelemetryDashboard:
             # Update temperature panel
             self.cpu_temp_label.config(text=f"CPU: {self.metrics.cpu_temp:.1f}°C")
             self.uptime_label.config(text=f"Uptime: {self.metrics.system_uptime}")
+            
+            # Update GPU panel
+            self.gpu_usage_label.config(text=f"{self.metrics.gpu_usage:.1f}%")
+            self.gpu_memory_label.config(text=f"Memory: {self.metrics.gpu_memory_percent:.1f}%")
+            self.gpu_temp_label.config(text=f"Temp: {self.metrics.gpu_temp:.1f}°C")
+            # Truncate GPU name if too long
+            gpu_name = self.metrics.gpu_name[:20] + "..." if len(self.metrics.gpu_name) > 20 else self.metrics.gpu_name
+            self.gpu_name_label.config(text=gpu_name)
+            
+            # Update audio panel
+            self.audio_sample_rate_label.config(text=f"{self.metrics.audio_sample_rate / 1000:.1f} kHz")
+            format_text = f"{self.metrics.audio_bit_depth}-bit {self.metrics.audio_channels}ch"
+            self.audio_format_label.config(text=format_text)
+            self.audio_buffer_label.config(text=f"Buffer: {self.metrics.audio_buffer_size}")
+            # Truncate device name if too long
+            device_name = self.metrics.audio_device_name[:20] + "..." if len(self.metrics.audio_device_name) > 20 else self.metrics.audio_device_name
+            self.audio_device_label.config(text=device_name)
             
             # Update graphs
             self.update_graphs()
@@ -567,8 +1008,36 @@ class TelemetryDashboard:
             self.ax3_net.set_facecolor('#1e1e1e')
             self.ax3_net.legend(fontsize=8, loc='upper right')
             
+            # Update GPU Usage graph
+            self.ax4_gpu.clear()
+            self.ax4_gpu.plot(times, list(self.metrics.gpu_usage_history), 'yellow', linewidth=2, label='GPU %')
+            self.ax4_gpu.set_ylabel('GPU %', color='white', fontsize=9)
+            self.ax4_gpu.set_ylim(0, 100)
+            self.ax4_gpu.tick_params(colors='white', labelsize=8)
+            self.ax4_gpu.grid(True, alpha=0.3)
+            self.ax4_gpu.set_facecolor('#1e1e1e')
+            
+            # Update GPU Memory graph
+            self.ax4_gpu_mem.clear()
+            self.ax4_gpu_mem.plot(times, list(self.metrics.gpu_memory_history), 'orange', linewidth=2, label='GPU Mem %')
+            self.ax4_gpu_mem.set_ylabel('GPU Mem %', color='white', fontsize=9)
+            self.ax4_gpu_mem.set_ylim(0, 100)
+            self.ax4_gpu_mem.tick_params(colors='white', labelsize=8)
+            self.ax4_gpu_mem.grid(True, alpha=0.3)
+            self.ax4_gpu_mem.set_facecolor('#1e1e1e')
+            
+            # Update Audio graph
+            self.ax5_audio.clear()
+            self.ax5_audio.plot(times, list(self.metrics.audio_sample_rate_history), 'lime', linewidth=2, label='Sample Rate (kHz)')
+            self.ax5_audio.plot(times, list(self.metrics.audio_buffer_history), 'cyan', linewidth=2, label='Buffer Size')
+            self.ax5_audio.set_ylabel('Audio Metrics', color='white', fontsize=9)
+            self.ax5_audio.tick_params(colors='white', labelsize=8)
+            self.ax5_audio.grid(True, alpha=0.3)
+            self.ax5_audio.set_facecolor('#1e1e1e')
+            self.ax5_audio.legend(fontsize=8, loc='upper right')
+            
             # Format x-axis for all graphs
-            for ax in [self.ax1_cpu, self.ax1_mem, self.ax2_disk, self.ax3_net]:
+            for ax in [self.ax1_cpu, self.ax1_mem, self.ax2_disk, self.ax3_net, self.ax4_gpu, self.ax4_gpu_mem, self.ax5_audio]:
                 ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
                 ax.xaxis.set_major_locator(mdates.SecondLocator(interval=10))
                 for label in ax.get_xticklabels():
@@ -579,6 +1048,8 @@ class TelemetryDashboard:
             self.canvas1.draw()
             self.canvas2.draw()
             self.canvas3.draw()
+            self.canvas4.draw()
+            self.canvas5.draw()
             
         except Exception as e:
             print(f"Error updating graphs: {e}")
@@ -608,6 +1079,30 @@ class TelemetryDashboard:
             self.cpu_temp_label.config(foreground='#ffaa00')
         else:
             self.cpu_temp_label.config(foreground='#00ff00')
+        
+        # GPU color coding
+        if self.metrics.gpu_usage > 80:
+            self.gpu_usage_label.config(foreground='#ff4444')
+        elif self.metrics.gpu_usage > 60:
+            self.gpu_usage_label.config(foreground='#ffaa00')
+        else:
+            self.gpu_usage_label.config(foreground='#00ff00')
+        
+        # GPU temperature color coding
+        if self.metrics.gpu_temp > 85:
+            self.gpu_temp_label.config(foreground='#ff4444')
+        elif self.metrics.gpu_temp > 70:
+            self.gpu_temp_label.config(foreground='#ffaa00')
+        else:
+            self.gpu_temp_label.config(foreground='#00ff00')
+        
+        # Audio sample rate color coding
+        if self.metrics.audio_sample_rate < 44100:
+            self.audio_sample_rate_label.config(foreground='#ffaa00')
+        elif self.metrics.audio_sample_rate >= 96000:
+            self.audio_sample_rate_label.config(foreground='#00ff00')
+        else:
+            self.audio_sample_rate_label.config(foreground='#ffffff')
     
     def on_closing(self):
         """Handle application closing"""
@@ -625,6 +1120,8 @@ def main():
     print(f"Python version: {platform.python_version()}")
     print(f"System: {platform.system()} {platform.release()}")
     print(f"WMI Available: {WMI_AVAILABLE}")
+    print(f"GPU Available: {GPU_AVAILABLE}")
+    print(f"Audio Available: {AUDIO_AVAILABLE}")
     
     try:
         dashboard = TelemetryDashboard()

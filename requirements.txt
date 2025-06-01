@@ -1,3 +1,7 @@
 psutil>=5.9.0
 WMI>=1.5.1
 matplotlib>=3.5.0
+GPUtil>=1.4.0
+pycaw>=20220416
+comtypes>=1.1.0
+nvidia-ml-py3>=7.352.0
